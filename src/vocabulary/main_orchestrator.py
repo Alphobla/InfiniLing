@@ -103,7 +103,7 @@ class VocabularyApp:
             progress_callback: Optional callback function for progress updates
         
         Returns:
-            dict: Session results with selected_words, story, and audio_path
+            dict: Session results with selected_words, story, audio_path, and session_word_updates
         """
         
         if progress_callback:
@@ -125,7 +125,7 @@ class VocabularyApp:
         if vocab_count < final_selection_size:
             if progress_callback:
                 progress_callback(f"❌ Not enough vocabulary words. Need at least {final_selection_size}, have {vocab_count}")
-            return {"selected_words": [], "story": "", "audio_path": ""}
+            return {"selected_words": [], "story": "", "audio_path": "", "session_word_updates": []}
         
         # Select words using priority system
         if progress_callback:
@@ -138,14 +138,19 @@ class VocabularyApp:
         if not selected_words:
             if progress_callback:
                 progress_callback("❌ No words selected")
-            return {"selected_words": [], "story": "", "audio_path": ""}
+            return {"selected_words": [], "story": "", "audio_path": "", "session_word_updates": []}
         
         if progress_callback:
             progress_callback(f"✅ Selected {len(selected_words)} words for the session")
         
-        # Mark words as used (they'll be updated based on review results)
+        # Instead of marking words as used (which persists), collect intended updates in memory
+        session_word_updates = []
         for word, translation, _ in selected_words:
-            self.vocabulary_selector.mark_word_used(word, translation)
+            session_word_updates.append({
+                "word": word,
+                "translation": translation,
+                "repeat": False,  # Not repeated, just used in session
+            })
         
         # Generate content
         generated_text = ""
@@ -186,14 +191,14 @@ class VocabularyApp:
                     audio_path = ""
             except Exception as e:
                 if progress_callback:
-                    progress_callback(f"❌ Error generating audio: {e}")
+                    progress_callback(f"⚠️ Error generating audio: {e}")
                 audio_path = ""
         
-        # Return session results
         return {
             "selected_words": selected_words,
             "story": generated_text,
-            "audio_path": audio_path
+            "audio_path": audio_path,
+            "session_word_updates": session_word_updates
         }
     
     def load_last_session(self, progress_callback=None) -> dict:

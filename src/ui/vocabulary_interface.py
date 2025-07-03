@@ -194,6 +194,18 @@ class VocabularyInterface:
     def generate_wordtext(self):
         """Generate wordtext using the modern backend"""
         try:
+            # Pull latest from Git before generating words
+            git_status = None
+            if hasattr(self.vocab_app, 'git_manager'):
+                self.status_label.config(text="🔄 Pulling latest vocabulary from Git...")
+                print("🔄 Pulling latest vocabulary from Git...")
+                git_status = self.vocab_app.git_manager.pull_latest()
+                if git_status:
+                    print("✅ Git pull successful. Using latest vocabulary.")
+                    self.status_label.config(text="✅ Git pull successful. Using latest vocabulary.")
+                else:
+                    print("⚠️ Git pull failed. Using local vocabulary.")
+                    self.status_label.config(text="⚠️ Git pull failed. Using local vocabulary.")
             # Check if test mode is enabled
             if self.use_test_mode.get():
                 self.run_test_mode()
@@ -304,7 +316,7 @@ class VocabularyInterface:
                         try:
                             if hasattr(self, 'generate_button') and self.generate_button.winfo_exists():
                                 self.generate_button.config(state='normal', text="📖\nGenerate\nWordtext")
-                        except:
+                        except Exception:
                             pass  # Button might be destroyed if UI switched
                     self.master.after(0, safe_button_reset)
             
@@ -742,6 +754,22 @@ class ReviewInterface:
                         command=self.setup_tile_view, style='Accent.TButton')
         btn.pack(side='bottom', pady=20)
 
+    def extract_word_data(self, word_data, idx=None):
+        """Helper to extract word, translation, pronunciation from dict or tuple/list"""
+        if isinstance(word_data, dict):
+            word = word_data.get('word', f'Word{idx+1}' if idx is not None else 'Word')
+            translation = word_data.get('translation', f'Translation{idx+1}' if idx is not None else 'Translation')
+            pronunciation = word_data.get('pronunciation', '')
+        elif isinstance(word_data, (tuple, list)):
+            word = word_data[0] if len(word_data) > 0 else (f'Word{idx+1}' if idx is not None else 'Word')
+            translation = word_data[1] if len(word_data) > 1 else (f'Translation{idx+1}' if idx is not None else 'Translation')
+            pronunciation = word_data[2] if len(word_data) > 2 else ''
+        else:
+            word = f'Word{idx+1}' if idx is not None else 'Word'
+            translation = f'Translation{idx+1}' if idx is not None else 'Translation'
+            pronunciation = ''
+        return word, translation, pronunciation
+
     def setup_tile_view(self):
         """Setup the vocabulary selection view"""
         self.clear_content_frame()
@@ -795,10 +823,7 @@ class ReviewInterface:
         print(f"DEBUG: Creating {len(vocab_to_show)} tiles in {rows}x{cols} grid")
         
         for i, word_data in enumerate(vocab_to_show):
-            word = word_data.get('word', f'Word{i+1}')  # Fallback if no word
-            translation = word_data.get('translation', f'Translation{i+1}')  # Fallback
-            pronunciation = word_data.get('pronunciation', '')
-            
+            word, translation, pronunciation = self.extract_word_data(word_data, i)
             row = i // cols
             col = i % cols
             
@@ -1047,17 +1072,46 @@ class ReviewInterface:
     def finish_review(self):
         """Finish the review session and show statistics"""
         try:
-            # Just prepare for showing statistics - don't save yet!
+            # Only show statistics, do NOT save any progress yet!
             print(f"� Review complete: {len(self.marked_difficult)} difficult, {len(self.review_data) - len(self.marked_difficult)} easy words")
             print("📋 Showing statistics - choose your save option...")
-            
             # Show statistics page (saving will happen when user chooses)
             self.setup_statistics_view()
-                
         except Exception as e:
             print(f"Error finishing review: {e}")
             # Still try to show statistics
             self.setup_statistics_view()
+
+    def save_review_progress(self):
+        """Save the review progress to database and Git"""
+        try:
+            if self.vocab_app and hasattr(self.vocab_app, 'database_manager'):
+                print(f"💾 Saving word progress to database...")
+                # Update word statistics based on review
+                for idx, word_data in enumerate(self.review_data):
+                    word, translation, _ = self.extract_word_data(word_data, idx)
+                    if word in self.marked_difficult:
+                        # Mark as difficult (to be repeated)
+                        self.vocab_app.database_manager.add_occurrence(word, translation, repeat=True)
+                    else:
+                        # Mark as understood (not repeated)
+                        self.vocab_app.database_manager.add_occurrence(word, translation, repeat=False)
+                # Commit changes to Git after saving word progress
+                if hasattr(self.vocab_app, 'git_manager'):
+                    print("🔄 Committing changes to Git...")
+                    commit_message = f"Update vocabulary progress: {len(self.marked_difficult)} difficult, {len(self.review_data) - len(self.marked_difficult)} easy words"
+                    success = self.vocab_app.git_manager.push_changes(commit_message)
+                    if success:
+                        print("✅ Successfully saved progress and committed to Git")
+                    else:
+                        print("⚠️ Failed to commit to Git (changes saved locally)")
+                else:
+                    print("⚠️ Git manager not available - changes saved locally only")
+            else:
+                print("⚠️ Database manager not available")
+        except Exception as e:
+            print(f"Error saving review progress: {e}")
+            raise
 
     def setup_statistics_view(self):
         """Setup the statistics view showing before/after urgency comparison"""
@@ -1137,15 +1191,21 @@ class ReviewInterface:
                         # Calculate before urgency using the vocabulary selector from vocab_app
                         before_urgency = self.vocab_app.vocabulary_selector.calculate_word_priority(word, translation)
                         
-                        # Calculate after urgency based on review actions
-                        if word in self.marked_difficult:
-                            # Words marked as difficult get higher urgency
+                        # Use helper to check if word was reviewed and if marked difficult
+                        reviewed = False
+                        difficult = False
+                        for idx, wd in enumerate(self.review_data):
+                            w, t, _ = self.extract_word_data(wd, idx)
+                            if w == word:
+                                reviewed = True
+                                if word in self.marked_difficult:
+                                    difficult = True
+                                break
+                        if difficult:
                             after_urgency = min(100, before_urgency + 15)
-                        elif any(wd.get('word') == word for wd in self.review_data):
-                            # Words that were reviewed but not marked difficult get lower urgency
+                        elif reviewed:
                             after_urgency = max(0, before_urgency - 10)
                         else:
-                            # Words not in this review session keep their urgency
                             after_urgency = before_urgency
                         
                         word_data.append({
@@ -1153,8 +1213,8 @@ class ReviewInterface:
                             'translation': translation,
                             'before': before_urgency,
                             'after': after_urgency,
-                            'reviewed': any(wd.get('word') == word for wd in self.review_data),
-                            'difficult': word in self.marked_difficult
+                            'reviewed': reviewed,
+                            'difficult': difficult
                         })
             
             if not word_data:
@@ -1275,44 +1335,6 @@ class ReviewInterface:
             # Still try to go back
             if self.back_callback:
                 self.back_callback()
-
-    def save_review_progress(self):
-        """Save the review progress to database and Git"""
-        try:
-            if self.vocab_app and hasattr(self.vocab_app, 'database_manager'):
-                print(f"💾 Saving word progress to database...")
-                
-                # Update word statistics based on review
-                for word_data in self.review_data:
-                    word = word_data.get('word', '')
-                    translation = word_data.get('translation', '')
-                    
-                    if word in self.marked_difficult:
-                        # Mark as difficult (to be repeated)
-                        self.vocab_app.database_manager.add_occurrence(word, translation, repeat=True)
-                    else:
-                        # Mark as understood (not repeated)
-                        self.vocab_app.database_manager.add_occurrence(word, translation, repeat=False)
-                
-                # Commit changes to Git after saving word progress
-                if hasattr(self.vocab_app, 'git_manager'):
-                    print("🔄 Committing changes to Git...")
-                    
-                    commit_message = f"Update vocabulary progress: {len(self.marked_difficult)} difficult, {len(self.review_data) - len(self.marked_difficult)} easy words"
-                    success = self.vocab_app.git_manager.push_changes(commit_message)
-                    
-                    if success:
-                        print("✅ Successfully saved progress and committed to Git")
-                    else:
-                        print("⚠️ Failed to commit to Git (changes saved locally)")
-                else:
-                    print("⚠️ Git manager not available - changes saved locally only")
-            else:
-                print("⚠️ Database manager not available")
-                
-        except Exception as e:
-            print(f"Error saving review progress: {e}")
-            raise
 
     def exit_without_saving(self):
         """Exit without saving progress (undo the review changes)"""
