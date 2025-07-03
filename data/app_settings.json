@@ -1,0 +1,14 @@
+{
+    "whisper_mode": {
+        "model_size": "small",
+        "language": "fr"
+    },
+    "wordstory_mode": {
+        "max_vocab_size": 100,
+        "review_frequency": "weekly"
+    },
+    "ui_settings": {
+        "theme": "light",
+        "font_size": 12
+    }
+}
